@@ -1,0 +1,184 @@
+#include <stdbool.h>
+#include <stdint.h>
+#include "nrf_drv_rtc.h"
+#include "nrf_drv_clock.h"
+#include "nrf_delay.h"
+#include "app_error.h"
+#include "app_timer.h"
+#include "bsp.h"
+#include "nrf_pwr_mgmt.h"
+#include "nrf_gpio.h"
+
+// Pin definitions for fogger and alarm (modify based on your setup)
+#define FOGGER_PIN 18  // Example GPIO pin for fogger
+#define ALARM_PIN 19   // Example GPIO pin for fire alarm
+
+// Time window definitions
+#define DAY_START_HOUR 10   // 10:00 AM
+#define DAY_END_HOUR 17     // 5:00 PM
+#define NIGHT_START_HOUR 17 // 5:30 PM
+#define NIGHT_END_HOUR 9    // 9:00 AM
+
+// Humidity and temperature thresholds
+#define HUMIDITY_THRESHOLD 70
+#define TEMP_LOW 27
+#define TEMP_MED 32
+#define TEMP_HIGH 38
+#define FIRE_TEMP 58
+
+// Fogger timer durations in milliseconds
+#define FOGGER_LOW_TIME 120000  // 2 minutes
+#define FOGGER_MED_TIME 180000  // 3 minutes
+#define FOGGER_HIGH_TIME 240000 // 4 minutes
+#define FOGGER_MAX_TIME 300000  // 5 minutes
+
+// Sleep durations in milliseconds
+#define SLEEP_SHORT 120000  // 2 minutes
+#define SLEEP_MED 300000    // 5 minutes
+#define SLEEP_LONG 600000   // 10 minutes
+#define SLEEP_VERY_LONG 900000 // 15 minutes
+
+APP_TIMER_DEF(fogger_timer_id);    // Timer for fogger control
+APP_TIMER_DEF(system_timer_id);    // Timer for 30-minute wakeups
+bool fire_alarm_active = false;
+
+// Placeholder for sensor values
+float current_humidity = 0;
+float current_temperature = 0;
+
+// Function Prototypes
+void check_daytime_conditions();
+void check_nighttime_conditions();
+void fogger_control(uint32_t fogger_on_time, uint32_t sleep_time);
+void fire_alarm_check();
+void system_timer_handler(void *p_context);
+void fogger_timer_handler(void *p_context);
+void read_sensors();
+int get_current_hour();
+void fogger_on();
+void fogger_off();
+void fire_alarm_on();
+void fire_alarm_off();
+
+// Initialization for timers and sensors
+void timers_init() {
+    // Initialize app timer library
+    ret_code_t err_code = app_timer_init();
+    APP_ERROR_CHECK(err_code);
+    
+    // Create fogger timer
+    err_code = app_timer_create(&fogger_timer_id, APP_TIMER_MODE_SINGLE_SHOT, fogger_timer_handler);
+    APP_ERROR_CHECK(err_code);
+
+    // Create system timer that wakes up every 30 minutes
+    err_code = app_timer_create(&system_timer_id, APP_TIMER_MODE_REPEATED, system_timer_handler);
+    APP_ERROR_CHECK(err_code);
+    
+    // Start the system timer to wake up every 30 minutes
+    err_code = app_timer_start(system_timer_id, APP_TIMER_TICKS(1800000), NULL); // 30 minutes in ticks
+    APP_ERROR_CHECK(err_code);
+}
+
+// Simulate sensor reading functions (replace these with real sensor data)
+void read_sensors() {
+    // Placeholder function for sensor readings.
+    // Implement real sensor reading here for humidity and temperature
+    current_humidity = 65;     // Example value: replace with real sensor read
+    current_temperature = 35;  // Example value: replace with real sensor read
+}
+
+// Placeholder for getting the current hour (implement RTC-based reading)
+int get_current_hour() {
+    // Use the Thingy52 RTC or system clock to get the current hour
+    // Placeholder: replace with real-time system
+    return 14; // Example hour: replace with actual RTC read
+}
+
+// Main system wakeup function
+void system_timer_handler(void *p_context) {
+    int current_hour = get_current_hour();
+
+    if (current_hour >= DAY_START_HOUR && current_hour < DAY_END_HOUR) {
+        check_daytime_conditions();
+    } else if (current_hour >= NIGHT_START_HOUR || current_hour < NIGHT_END_HOUR) {
+        check_nighttime_conditions();
+    }
+}
+
+// Fogger control handler
+void fogger_timer_handler(void *p_context) {
+    fogger_off();  // Turn off fogger when the fogger timer expires
+}
+
+// Fogger ON function
+void fogger_on() {
+    nrf_gpio_pin_set(FOGGER_PIN);  // Set fogger pin to HIGH (turn ON fogger)
+}
+
+// Fogger OFF function
+void fogger_off() {
+    nrf_gpio_pin_clear(FOGGER_PIN);  // Set fogger pin to LOW (turn OFF fogger)
+}
+
+// Fire Alarm ON function
+void fire_alarm_on() {
+    nrf_gpio_pin_set(ALARM_PIN);  // Set alarm pin to HIGH (turn ON alarm)
+}
+
+// Fire Alarm OFF function
+void fire_alarm_off() {
+    nrf_gpio_pin_clear(ALARM_PIN);  // Set alarm pin to LOW (turn OFF alarm)
+}
+
+// Control fogger and sleep based on conditions
+void fogger_control(uint32_t fogger_on_time, uint32_t sleep_time) {
+    fogger_on();  // Turn on fogger
+    app_timer_start(fogger_timer_id, APP_TIMER_TICKS(fogger_on_time), NULL);  // Start timer to turn off fogger
+    nrf_delay_ms(sleep_time);  // Sleep for the specified time
+}
+
+// Check conditions during daytime operation (10 AM to 5 PM)
+void check_daytime_conditions() {
+    read_sensors();  // Get humidity and temperature values
+    
+    if (current_humidity < HUMIDITY_THRESHOLD) {
+        if (current_temperature < TEMP_LOW) {
+            fogger_control(FOGGER_LOW_TIME, SLEEP_VERY_LONG);
+        } else if (current_temperature >= TEMP_LOW && current_temperature <= TEMP_MED) {
+            fogger_control(FOGGER_MED_TIME, SLEEP_LONG);
+        } else if (current_temperature > TEMP_MED && current_temperature <= TEMP_HIGH) {
+            fogger_control(FOGGER_HIGH_TIME, SLEEP_MED);
+        } else if (current_temperature > TEMP_HIGH) {
+            fogger_control(FOGGER_MAX_TIME, SLEEP_SHORT);
+        }
+    } else {
+        fogger_off();  // If humidity is above 70%, keep fogger off
+    }
+}
+
+// Check conditions during nighttime (5:30 PM to 9 AM)
+void check_nighttime_conditions() {
+    read_sensors();  // Get temperature for fire alarm check
+
+    if (current_temperature > FIRE_TEMP && !fire_alarm_active) {
+        fire_alarm_on();  // Trigger fire alarm
+        fire_alarm_active = true;
+    } else if (current_temperature <= FIRE_TEMP && fire_alarm_active) {
+        fire_alarm_off();  // Stop fire alarm
+        fire_alarm_active = false;
+    }
+}
+
+int main(void) {
+    // Initialize GPIO for fogger and alarm
+    nrf_gpio_cfg_output(FOGGER_PIN);
+    nrf_gpio_cfg_output(ALARM_PIN);
+
+    // Initialize the timers and sensors
+    timers_init();
+
+    // Enter low-power mode until system timer wakes it up
+    while (1) {
+        nrf_pwr_mgmt_run();  // Go to low-power mode
+    }
+}  
